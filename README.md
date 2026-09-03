@@ -13,7 +13,7 @@
 [![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-10B981?style=for-the-badge)](#open-source-licensing)
 [![Vibecode](https://img.shields.io/badge/VibeCode-Cybernative%20Signal%20Build-A855F7?style=for-the-badge)](#gojosixeye-net)
 
-> **Initializing DecentralRadar v1.0...** <br>
+> **Initializing DecentralRadar v0.2.0...** <br>
 > *STATUS*: Illuminating the invisible. 🎃 <br>
 > *LAYER*: Shadowing the grid. 🥷 <br>
 > *RESULT*: Maximum signal. 💥 
@@ -68,6 +68,10 @@ The result is a **local-first** tool for visualizing RF visibility in your physi
 - 🕵️ Connected-device awareness & role hints
 - 🚶 RSSI-based presence and motion heuristics
 - 🏠 Room fingerprinting and health summaries
+- 🔍 **Automated network reconnaissance** (self-running `nmap` scans)
+- 🛡️ **WiFi attack detection** (evil twin / rogue AP / deauth & jamming)
+- 🤖 **AI behavioral anomaly analysis**
+- ⚠️ **Consolidated threat scoring** across security, recon, and AI findings
 
 ## 👁️ Why it was created (and why it's unique)
 
@@ -80,6 +84,38 @@ It exists to explore a **more tactile, visual, and honest way** of looking at th
 - **Direct Kernel Access:** The Zig scanner talks directly to Linux interfaces via `nl80211`.
 - **Commodity Hardware:** Requires NO custom sensor nodes; it runs on standard Linux WiFi gear.
 - **Environmental Context:** Fuses raw WiFi visibility with heuristics for motion, posture drift, signal health, and room fingerprinting.
+
+## ✨ New in v0.2.0 — Recon, Security & Threats
+
+v0.2.0 upgrades the observatory from pure visualization into a **network awareness & security suite** with three new engine modules and three new GUI tabs.
+
+### 🔍 Recon (Self-Running Network Reconnaissance)
+The app now automatically fingerprints every LAN peer it discovers (`ip neigh`) and schedules tiered `nmap` scans (XML output parsed via `quick-xml`):
+- **Tiered scanning** — Fast (`-sV -T4 --top-ports 100`), Deep (`-sV -sC -p- -T3`), Stealth (`-sS -Pn`)
+- **Port risk classification** — 50+ ports mapped to Safe / Info / Suspicious / Critical (SSH safe; Telnet, SMBv1, VNC critical; RDP & admin panels suspicious)
+- **Vulnerability correlator** — matches results against built-in CVEs (EternalBlue CVE-2017-0144, BlueKeep CVE-2019-0708, anonymous FTP, plaintext Telnet, weak SNMP, UPnP…)
+- **Structured report generator** — ASCII report + JSON export with prioritized recommendations
+- **Privilege-aware scans** — detected via effective UID; unprivileged runs automatically drop root-only flags (`-O`, `-sS`), so scans never fail on a non-root session
+- Manual target queueing + auto-scheduling (quick/deep cadence)
+
+### 🛡️ Security (WiFi Attack Detection)
+- **Evil twin / rogue AP** — same SSID on multiple vendors, security downgrades (open APs), high-signal hidden APs, new BSSIDs on known SSIDs
+- **Deauth / jamming detection** — EMA signal baselines that flag simultaneous multi-AP drops (jamming) and repeated single-AP drops (targeted deauth)
+
+### 🤖 AI (Behavioral Anomaly Analysis)
+- New device arrival, IP changes (spoofing), subnet-scan activity spikes, unusual-hour activity, RSSI variance anomalies, and disappeared devices
+
+### ⚠️ Threats (Consolidated Threat Scoring)
+A unified threat score composites high-severity AI anomalies, recon risk, and critical security alerts, with per-device and network-health framing.
+
+### New UI Tabs
+- `🔍 Recon` — scan controls, per-device results, report generation/export
+- `🛡 Security` — ranked alert feed with evidence & recommendations
+- `⚠ Threats` — composite score, AI anomalies, critical findings, network health
+
+> **Requirement:** `nmap` must be installed for auto-scanning (`sudo apt install nmap`). The Recon tab shows a warning banner if it's missing.
+
+---
 
 ## ⚠️ Safety & Reality Check
 
@@ -101,14 +137,22 @@ Linux WiFi / NetworkManager / neighbor table
         │
         ▼
 Rust app state ──> monitoring heuristics ──> egui observatory & radar
+        ▲
+        │  (background threads, each sharing Arc<Mutex<T>> state)
+        ├── recon::    nmap XML parsing + vulnerability correlation + reports
+        ├── security:: evil twin / rogue AP / deauth / jamming detection
+        └── ai::       behavioral anomaly analysis
 ```
 
 **Key moving parts:**
-* `build.rs`: Automatically invokes `zig build -Doptimize=ReleaseSafe`.
+* `build.rs`: Automatically invokes `zig build -Doptimize=ReleaseSafe` (falls back to a prebuilt `libwifi_scan.so` when the Zig toolchain is unavailable).
 * `native/src/scanner.zig`: Builds the fast, low-level shared scanner library.
 * `src/scanner/`: Handles Rust FFI and scan data parsing.
 * `src/gui/`: Renders the immersive dashboard, tabs, and sweeping radar.
 * `src/monitoring/`, `src/pose/`, `src/vitals/`: Computes heuristics and summaries.
+* `src/recon/`: Self-running `nmap` scans, port-risk database, CVE correlator, report/JSON export.
+* `src/security/`: RF-attack detection (evil twin, deauth, jamming).
+* `src/ai/`: Behavioral anomaly analysis (subnet scans, spoofing, unusual activity).
 
 ---
 
@@ -121,6 +165,7 @@ This project is currently **Linux-first** and targeted at Ubuntu-style desktop e
 **Required Tooling:**
 - `rustc` & `cargo` (1.94.0+)
 - `zig` (0.13.0) - *Use version 0.13.0 to prevent build API drift.*
+- `nmap` (for the Recon feature's automated scanning) - `sudo apt install nmap`
 
 ### 2. Install Toolchains
 
@@ -163,10 +208,11 @@ cargo run
 
 ```text
 gojosix-eye/
-├── build.rs                  # Rust build script (runs Zig, links library)
+├── build.rs                  # Rust build script (runs Zig / prebuilt .so fallback)
 ├── native/                   # Zig codebase
 │   ├── build.zig             # Zig build definition
-│   └── src/scanner.zig       # nl80211 WiFi scanner core
+│   ├── src/scanner.zig       # nl80211 WiFi scanner core
+│   └── zig-out/lib/          # Prebuilt libwifi_scan.so (build fallback)
 ├── src/                      # Rust codebase
 │   ├── gui/                  # UI components (dashboard, radar, tabs, export)
 │   ├── monitoring/           # Observatory summary logic
@@ -174,6 +220,9 @@ gojosix-eye/
 │   ├── vitals/               # Vitals-like RSSI drop/spike analysis
 │   ├── scanner/              # Rust FFI wrapper for Zig scanner
 │   ├── signal_health.rs      # Environmental health & fingerprinting
+│   ├── recon/                # nmap scanning, port risk, CVE correlator, reports
+│   ├── security/             # evil twin / rogue AP / deauth / jamming detection
+│   ├── ai/                   # behavioral anomaly analysis
 │   └── models/               # Shared domain data models
 └── assets/                   
     ├── oui/oui.txt           # Vendor MAC lookup data
@@ -194,6 +243,9 @@ The app can export JSON snapshots of the current observatory state for external 
 - [ ] Better Linux packaging (AppImage / Flatpak / DEB)
 - [ ] Saved sessions and historical replay mode
 - [ ] Temporal diffing between saved room fingerprints
+- [ ] Export recon reports to Markdown/HTML
+- [ ] Historical threat timeline & alert dedup across reboots
+- [ ] Integration with `nmap` OS detection when run as root
 
 ## 📜 Licensing & Credits
 
