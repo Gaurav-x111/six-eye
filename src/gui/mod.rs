@@ -7,17 +7,23 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Local};
 use eframe::egui::{self, Color32, Stroke};
 
+use crate::ai::{self, SharedAi};
 use crate::models::{ConnectedDevice, ConnectionInfo, Network};
 use crate::monitoring::{self, ActivitySample, MonitoringSummary};
 use crate::oui::OuiDatabase;
 use crate::pose::{self, PoseEstimate};
+use crate::recon::{self, SharedRecon};
 use crate::scanner;
+use crate::security::{self, SharedSecurity};
 use crate::vitals::{self, VitalSigns};
 
 pub mod devices;
 pub mod export;
 pub mod radar;
+pub mod recon_tab;
+pub mod security_tab;
 pub mod tabs;
+pub mod threats_tab;
 
 pub const LIVE_SCAN_INTERVAL_SECS: u64 = 3;
 
@@ -43,6 +49,12 @@ pub const ALERT_CRITICAL: Color32 = Color32::from_rgb(255, 60, 80);
 pub const ALERT_WARNING: Color32 = Color32::from_rgb(255, 164, 84);
 pub const ALERT_ATTENTION: Color32 = Color32::from_rgb(242, 205, 77);
 
+pub const RISK_CRITICAL: Color32 = Color32::from_rgb(255, 60, 80);
+pub const RISK_HIGH: Color32 = Color32::from_rgb(255, 120, 60);
+pub const RISK_MEDIUM: Color32 = Color32::from_rgb(255, 194, 92);
+pub const RISK_LOW: Color32 = Color32::from_rgb(92, 182, 255);
+pub const RISK_SAFE: Color32 = Color32::from_rgb(82, 222, 145);
+
 #[derive(PartialEq)]
 pub enum ActiveTab {
     Overview,
@@ -50,6 +62,9 @@ pub enum ActiveTab {
     Devices,
     Radios,
     Hotspots,
+    Recon,
+    Security,
+    Threats,
 }
 
 pub struct RadarApp {
@@ -79,6 +94,23 @@ pub struct RadarApp {
     pub device_search: String,
     pub device_role_filter: String,
     pub device_expanded: std::collections::HashSet<String>,
+
+    // Recon state
+    pub recon: SharedRecon,
+    pub recon_expanded: std::collections::HashSet<String>,
+
+    // Security state
+    pub security: SharedSecurity,
+
+    // AI state
+    pub ai: SharedAi,
+
+    // Recon tab state
+    pub recon_target_input: String,
+    pub recon_scan_tier: recon::ScanTier,
+    pub last_report: Option<recon::report::ReconReport>,
+    pub report_text: String,
+    pub nmap_privileged: bool,
 }
 
 impl RadarApp {
@@ -97,6 +129,10 @@ impl RadarApp {
         ));
         let (scan_request_tx, scan_request_rx) = mpsc::channel();
 
+        let recon = recon::new_shared_recon();
+        let security = security::new_shared_security();
+        let ai = ai::new_shared_ai();
+
         let thread_networks = Arc::clone(&shared_networks);
         let thread_connected_devices = Arc::clone(&shared_connected_devices);
         let thread_connection = Arc::clone(&shared_connection);
@@ -105,6 +141,9 @@ impl RadarApp {
         let thread_scan_ok = Arc::clone(&scan_ok);
         let thread_status_line = Arc::clone(&status_line);
         let thread_oui_db = Arc::clone(&oui_db);
+        let thread_recon = Arc::clone(&recon);
+        let thread_security = Arc::clone(&security);
+        let thread_ai = Arc::clone(&ai);
         let egui_ctx = cc.egui_ctx.clone();
 
         thread::spawn(move || loop {
@@ -119,7 +158,7 @@ impl RadarApp {
                     let device_len = bundle.connected_devices.len();
                     let network_len = update_shared_networks(&thread_networks, bundle.networks);
 
-                    *thread_connected_devices.lock().unwrap() = bundle.connected_devices;
+                    *thread_connected_devices.lock().unwrap() = bundle.connected_devices.clone();
                     *thread_connection.lock().unwrap() = bundle.connection;
                     *thread_scan_tick.lock().unwrap() += 1;
                     *thread_last_scan_at.lock().unwrap() = Some(scanned_at);
@@ -127,6 +166,31 @@ impl RadarApp {
                     *thread_status_line.lock().unwrap() = format!(
                         "● Live — {network_len} radios / {device_len} LAN peers / uplink {uplink_label}"
                     );
+
+                    // Run security analysis
+                    {
+                        let networks = thread_networks.lock().unwrap().clone();
+                        let mut sec = thread_security.lock().unwrap();
+                        sec.analyze(&networks);
+                    }
+
+                    // Run AI analysis
+                    {
+                        let networks = thread_networks.lock().unwrap().clone();
+                        let devices = thread_connected_devices.lock().unwrap().clone();
+                        let mut ai_engine = thread_ai.lock().unwrap();
+                        ai_engine.analyze(&networks, &devices);
+                    }
+
+                    // Auto-queue recon for new devices
+                    {
+                        let devices = thread_connected_devices.lock().unwrap().clone();
+                        let mut engine = thread_recon.lock().unwrap();
+                        engine.auto_scan_new_devices = true;
+                        for device in &devices {
+                            engine.queue_device(device);
+                        }
+                    }
                 }
                 Err(error) => {
                     *thread_scan_ok.lock().unwrap() = false;
@@ -141,6 +205,10 @@ impl RadarApp {
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         });
+
+        // Spawn recon thread
+        let recon_ctx = cc.egui_ctx.clone();
+        recon::nmap_runner::spawn_recon_thread(Arc::clone(&recon), recon_ctx);
 
         Self {
             shared_networks,
@@ -167,6 +235,15 @@ impl RadarApp {
             device_search: String::new(),
             device_role_filter: "All".to_string(),
             device_expanded: std::collections::HashSet::new(),
+            recon,
+            recon_expanded: std::collections::HashSet::new(),
+            security,
+            ai,
+            recon_target_input: String::new(),
+            recon_scan_tier: recon::ScanTier::Fast,
+            last_report: None,
+            report_text: String::new(),
+            nmap_privileged: recon::is_root(),
         }
     }
 
@@ -301,5 +378,14 @@ pub fn sig_color(sig: i32) -> Color32 {
         -65..=-51 => Color32::from_rgb(132, 214, 98),
         -75..=-66 => Color32::from_rgb(242, 205, 77),
         _ => Color32::from_rgb(248, 110, 90),
+    }
+}
+
+pub fn risk_color(score: u8) -> Color32 {
+    match score {
+        0..=20 => RISK_SAFE,
+        21..=50 => RISK_LOW,
+        51..=75 => RISK_MEDIUM,
+        _ => RISK_CRITICAL,
     }
 }

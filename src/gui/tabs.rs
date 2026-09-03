@@ -341,6 +341,9 @@ pub fn draw_observatory_panel(app: &mut RadarApp, ctx: &egui::Context) {
                     (ActiveTab::Devices, "📱 Devices"),
                     (ActiveTab::Radios, "📻 Radios"),
                     (ActiveTab::Hotspots, "🔥 Hotspots"),
+                    (ActiveTab::Recon, "🔍 Recon"),
+                    (ActiveTab::Security, "🛡 Security"),
+                    (ActiveTab::Threats, "⚠ Threats"),
                 ] {
                     if ui
                         .selectable_label(app.active_tab == tab, RichText::new(label).size(12.0))
@@ -361,6 +364,9 @@ pub fn draw_observatory_panel(app: &mut RadarApp, ctx: &egui::Context) {
                     ActiveTab::Devices => devices::draw_devices_tab(app, ui),
                     ActiveTab::Radios => draw_radios_tab(app, ui),
                     ActiveTab::Hotspots => draw_hotspots_tab(app, ui),
+                    ActiveTab::Recon => recon_tab::draw_recon_tab(app, ui),
+                    ActiveTab::Security => security_tab::draw_security_tab(app, ui),
+                    ActiveTab::Threats => threats_tab::draw_threats_tab(app, ui),
                 });
         });
 }
@@ -1241,7 +1247,7 @@ fn row(ui: &mut Ui, key: &str, value: &str, value_color: Color32) {
     });
 }
 
-fn info_chip(ui: &mut Ui, text: &str, color: Color32) {
+pub fn info_chip(ui: &mut Ui, text: &str, color: Color32) {
     egui::Frame::default()
         .fill(BG_CARD)
         .rounding(8.0)

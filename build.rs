@@ -15,14 +15,19 @@ fn main() {
         .status()
         .expect("Failed to execute zig build. Is zig installed?");
 
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let lib_path = PathBuf::from(manifest_dir).join("native/zig-out/lib");
+    let lib_file = lib_path.join("libwifi_scan.so");
+
     if !status.success() {
-        panic!("zig build failed with status {:?}", status);
+        // Fall back to a prebuilt library if zig build fails but a .so exists.
+        if !lib_file.exists() {
+            panic!("zig build failed with status {:?} and no prebuilt libwifi_scan.so was found", status);
+        }
+        println!("cargo:warning=zig build failed; using prebuilt libwifi_scan.so");
     }
 
     // 2. Tell Cargo where to find the compiled .so library
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let lib_path = PathBuf::from(manifest_dir).join("native/zig-out/lib");
-
     println!("cargo:rustc-link-search=native={}", lib_path.display());
 
     // 3. Link against the library
